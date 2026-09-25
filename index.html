@@ -327,12 +327,14 @@
     </div>
     <div class="grid-2" style="margin-top:16px;">
       <div class="panel">
-        <h3>Order book by line <span class="n">order qty vs. pieces cut</span></h3>
-        <div id="lineChart"></div>
+        <h3>Today's production <span class="n" id="todayLabel"></span></h3>
+        <div id="todayPanel"></div>
       </div>
       <div class="panel">
-        <h3>Order book by brand</h3>
-        <div id="brandChart"></div>
+        <h3>Line-wise snapshot <span class="n">exact pieces at each stage</span></h3>
+        <div class="table-wrap" style="border:none;">
+          <table id="lineSnapshotTable"></table>
+        </div>
       </div>
     </div>
   </section>
@@ -348,15 +350,25 @@
 
   <section class="view" id="view-daily">
     <div class="section-head">
+      <h2>Daily production</h2>
+      <div class="hint" id="dailyStageRange">Pieces logged per day, from the dated rows in Cutting Output / Loading / Sewing / KAJ&amp;BTN / finishing</div>
+    </div>
+    <div class="chart-card">
+      <div class="legend-row" id="dailyStageLegend"></div>
+      <div id="dailyStageChart"></div>
+      <div class="note-box" id="dailyStageNote"></div>
+    </div>
+    <div class="table-wrap" style="margin-top:12px;">
+      <table id="dailyStageTable"></table>
+    </div>
+
+    <div class="section-head" style="margin-top:26px;">
       <h2>Daily manpower</h2>
       <div class="hint" id="manpowerRange">Workers logged present, by line</div>
     </div>
     <div class="chart-card">
       <div class="legend-row" id="manpowerLegend"></div>
       <div id="manpowerChart"></div>
-      <div class="note-box">
-        <b>How this reads:</b> counts every named worker logged in the <b>Manpower</b> tab per day, grouped by the line they sit under in that sheet. If a line's daily output isn't dated consistently in Loading/Sewing/Cutting Output yet, only cumulative stage totals (below) can be shown &mdash; add a date to new rows there and a daily output trend can be added next.
-      </div>
     </div>
 
     <div class="section-head" style="margin-top:26px;">
@@ -366,14 +378,6 @@
     <div class="filter-row" id="lineFilters"></div>
     <div class="table-wrap">
       <table id="attendanceTable"></table>
-    </div>
-
-    <div class="section-head" style="margin-top:26px;">
-      <h2>Cumulative stage output</h2>
-      <div class="hint">Totals to date, from the master tab</div>
-    </div>
-    <div class="chart-card">
-      <div id="stageOutputChart"></div>
     </div>
   </section>
 
@@ -414,9 +418,30 @@
    Google login.
    ============================================================ */
 const SHEET_ID = "1PqhDx_nUmSK-F7Q022FySRf6GaBwo_g6sWm9wWypkPE";
-const TABS = { master:"Production", manpower:"Manpower", stitching:"STICHING" };
+const TABS = {
+  master:"Production", manpower:"Manpower",
+  loading:"Loading", sewing:"Sewing", kajbtn:"KAJ&BTN", finishing:"finishing", cuttingOutput:"cutting output",
+};
 let HAS_PACKING = true;
 let STAGE6_LABEL = "Packing";
+
+function normalizeDate(s){
+  s = (s||'').trim();
+  if(!s) return null;
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if(!m) return null;
+  let d=+m[1], mo=+m[2], y=+m[3];
+  if(y<100) y += 2000;
+  if(mo<1||mo>12||d<1||d>31) return null;
+  const key = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return { key, label: `${d} ${MON[mo-1]} '${String(y).slice(2)}` };
+}
+function styleMatches(a,b){
+  a=(a||'').trim().toUpperCase(); b=(b||'').trim().toUpperCase();
+  if(!a || !b) return false;
+  return a===b || a.startsWith(b) || b.startsWith(a);
+}
 const AUTO_REFRESH_MS = 3 * 60 * 1000; // 3 minutes
 
 function gvizUrl(sheetName){
@@ -498,6 +523,33 @@ function parseMaster(rows){
   HAS_PACKING = idx.packing >= 0;
   STAGE6_LABEL = HAS_PACKING ? "Packing" : "Dispatch";
 
+  // Build a column map for the "every header, as per sheet" detail view.
+  // The sheet's original section headers (CUTTING / STICHING / Kaj&Btn / FINSIHING)
+  // got flattened into a prefix on that group's first column by the CSV export —
+  // the same pattern as the Manpower tab — so read them off directly.
+  const rawHeaders = rows[headerIdx];
+  const SECTION_MARKERS = [
+    { re:/^order\b/i, label:'Order' },
+    { re:/^cutting\b/i, label:'Cutting' },
+    { re:/^stiching\b/i, label:'Stitching' },
+    { re:/^kaj\s*&?\s*btn\b/i, label:'Kaj & Btn' },
+    { re:/^fin[sy]ihing\b|^finishing\b/i, label:'Finishing' },
+  ];
+  let curSection = 'Order';
+  const colMeta=[];
+  rawHeaders.forEach((raw,i)=>{
+    const h = cellStr(raw);
+    if(!h || i===idx.style && false) {} // no-op guard, keep structure simple
+    if(!h) return;
+    if(normHeader(h)==='qc qty') curSection = 'QC, Dispatch & Shipping';
+    let label = h;
+    for(const m of SECTION_MARKERS){
+      if(m.re.test(h)){ curSection = m.label; label = h.replace(m.re,'').trim(); break; }
+    }
+    if(!label) label = h;
+    colMeta.push({ idx:i, label, section: curSection });
+  });
+
   const styles=[]; let blank=0;
   for(let r=headerIdx+1;r<rows.length;r++){
     const row=rows[r];
@@ -519,6 +571,7 @@ function parseMaster(rows){
       finishing: idx.finishing>=0 ? toNum(row[idx.finishing]) : 0,
       packing: HAS_PACKING ? toNum(row[idx.packing]) : dispatched,
       dispatched, totalShip: idx.totalShip>=0 ? toNum(row[idx.totalShip]) : 0,
+      raw: colMeta.map(c => ({ label:c.label, section:c.section, value: cellStr(row[c.idx]) })),
     });
   }
   if(!styles.length) throw new Error(`Found the "${TABS.master}" header row but no style rows under it.`);
@@ -569,49 +622,60 @@ function parseManpower(rows){
   return { days, workerCols };
 }
 
-/* ---------------- STICHING tab (contractor loading/output) ---------------- */
-function parseStitching(rows){
-  const headerIdx = rows.findIndex(r => cellStr(r[0]).toLowerCase()==='date' && cellStr(r[1]).toLowerCase().includes('style'));
-  if(headerIdx<0) throw new Error('Could not find the header row in "STICHING" (expected DATE, STYLE NO, COLOR, LOCATION, contractor...).');
-  const header = rows[headerIdx].map(h=>cellStr(h).toLowerCase());
-  const col = (pred) => header.findIndex(pred);
+/* ---------------- Generic dated stage-tab parser -----------------
+   Used for Loading, Sewing, KAJ&BTN, finishing and cutting output —
+   each is a per-row log of DATE, STYLE NO, COLOR, LOCATION[, contractor],
+   and one quantity column, resolved by name so column order doesn't matter
+   (cutting output, for instance, orders LOCATION before STYLE NO). */
+function parseStageTab(rows, qtyMatch, tabLabel){
+  const headerIdx = rows.findIndex(r => r.some(c => normHeader(c)==='date'));
+  if(headerIdx<0) return { entries:[], undated:0, found:false };
+  const H = rows[headerIdx].map(normHeader);
   const idx = {
-    date: col(h=>h==='date'),
-    style: col(h=>h.includes('style')),
-    color: col(h=>h==='color'),
-    line: col(h=>h==='location'),
-    contractor: col(h=>h==='contractor'),
-    load: col(h=>h.includes('loading')),
-    sew: col(h=>h.includes('sewing')),
-    kajbtn: col(h=>h.includes('kaj')),
+    date: findCol(H, h=>h==='date'),
+    style: findCol(H, h=>h.includes('style no')),
+    color: findCol(H, h=>h==='color'),
+    line: findCol(H, h=>h==='location'),
+    contractor: findCol(H, h=>h==='contractor'),
+    qty: findCol(H, qtyMatch),
   };
-  const entries=[];
+  const entries=[]; let undated=0;
   for(let r=headerIdx+1;r<rows.length;r++){
     const row=rows[r];
-    const contractor = cellStr(row[idx.contractor]);
     const style = cellStr(row[idx.style]);
-    if(!contractor || !style) continue;
+    if(!style) continue;
+    const dateRaw = idx.date>=0 ? cellStr(row[idx.date]) : '';
+    const date = normalizeDate(dateRaw);
+    if(dateRaw && !date) { /* unparseable, treat as undated */ }
+    if(!date) undated++;
     entries.push({
-      style, color: cellStr(row[idx.color]), line: cellStr(row[idx.line]) || 'Unassigned', name: contractor,
-      load: idx.load>=0 ? toNum(row[idx.load]) : 0,
-      sew: idx.sew>=0 ? toNum(row[idx.sew]) : 0,
-      kajbtn: idx.kajbtn>=0 ? toNum(row[idx.kajbtn]) : 0,
+      tab: tabLabel, date, style, color: cellStr(row[idx.color]),
+      line: cellStr(row[idx.line]) || 'Unassigned',
+      contractor: idx.contractor>=0 ? cellStr(row[idx.contractor]) : '',
+      qty: idx.qty>=0 ? toNum(row[idx.qty]) : 0,
     });
   }
-  if(!entries.length) throw new Error('Found the "STICHING" header row but no contractor rows under it.');
-  return entries;
+  return { entries, undated, found:true };
 }
 
 /* ============================================================
    Live state + derived data
    ============================================================ */
 let STYLES=[], MANPOWER=null, CONTRACTOR_ENTRIES=[], CONTRACTORS=[], LINES=[], TOTALS={};
+let STAGE_LOG = { loading:[], sewing:[], kajbtn:[], finishing:[], cuttingOutput:[] };
+let DAILY_STAGE = { dates:[], undatedCount:0 };
 
 function sum(arr, fn){ return arr.reduce((a,x)=>a+fn(x),0); }
 function pct(n,d){ return d>0 ? (n/d) : 0; }
 function fmt(n){ return Math.round(n).toLocaleString('en-IN'); }
 function pctStr(x){ return (x*100).toFixed(1)+'%'; }
 function cv(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function formatCellValue(v){
+  if(v===undefined||v===null||v==='') return '—';
+  if(v==='TRUE') return 'Yes';
+  if(v==='FALSE') return 'No';
+  return v;
+}
 function colorFromName(name){
   let h=0; for(let i=0;i<name.length;i++){ h=(h*31 + name.charCodeAt(i))>>>0; }
   return `hsl(${h%360} 42% 55%)`;
@@ -639,6 +703,24 @@ function recompute(){
     finishing: sum(STYLES,s=>s.finishing), packing: sum(STYLES,s=>s.packing),
   };
 
+  // Contractor loading vs. output: merged from the Loading and Sewing tabs
+  // (the old STICHING rollup tab only ever had UTM-III and isn't kept live).
+  const key = e => `${e.contractor}\u0001${e.style}\u0001${e.color}\u0001${e.line}`;
+  const byKey = {};
+  STAGE_LOG.loading.forEach(e=>{
+    if(!e.contractor) return;
+    const k=key(e);
+    if(!byKey[k]) byKey[k] = { name:e.contractor, style:e.style, color:e.color, line:e.line, load:0, sew:0 };
+    byKey[k].load += e.qty;
+  });
+  STAGE_LOG.sewing.forEach(e=>{
+    if(!e.contractor) return;
+    const k=key(e);
+    if(!byKey[k]) byKey[k] = { name:e.contractor, style:e.style, color:e.color, line:e.line, load:0, sew:0 };
+    byKey[k].sew += e.qty;
+  });
+  CONTRACTOR_ENTRIES = Object.values(byKey);
+
   const byName = {};
   CONTRACTOR_ENTRIES.forEach(e=>{
     if(!byName[e.name]) byName[e.name] = { name:e.name, line:e.line, entries:[], load:0, sew:0 };
@@ -651,6 +733,23 @@ function recompute(){
   CONTRACTORS.sort((a,b)=> b.load - a.load);
 
   LINES = [...new Set([...STYLES.map(s=>s.line), ...CONTRACTOR_ENTRIES.map(e=>e.line)])].sort();
+
+  // Daily stage totals, from whichever rows already carry a parsed date.
+  const buckets = {};
+  let undated = 0;
+  const stageKeys = [
+    ['cuttingOutput','cutting'], ['loading','loading'], ['sewing','sewing'],
+    ['kajbtn','kajbtn'], ['finishing','finishing'],
+  ];
+  stageKeys.forEach(([logKey, stageKey])=>{
+    STAGE_LOG[logKey].forEach(e=>{
+      if(!e.date){ undated++; return; }
+      if(!buckets[e.date.key]) buckets[e.date.key] = { key:e.date.key, label:e.date.label, cutting:0, loading:0, sewing:0, kajbtn:0, finishing:0 };
+      buckets[e.date.key][stageKey] += e.qty;
+    });
+  });
+  DAILY_STAGE.dates = Object.values(buckets).sort((a,b)=> a.key.localeCompare(b.key));
+  DAILY_STAGE.undatedCount = undated;
 }
 
 function generateAlerts(){
@@ -760,34 +859,43 @@ function renderOverview(){
     ? alerts.map(a=>`<div class="alert ${a.level}"><div class="chip"></div><div>${a.text}</div></div>`).join('')
     : `<div class="empty-note">Nothing flagged right now.</div>`;
 
+  // Today's production — the most recent dated day we actually have rows for.
+  const days = DAILY_STAGE.dates;
+  const today = days.length ? days[days.length-1] : null;
+  document.getElementById('todayLabel').textContent = today ? `· ${today.label}` : '';
+  if(today){
+    const rows = [
+      { label:'Cutting', value:today.cutting }, { label:'Loading', value:today.loading },
+      { label:'Sewing', value:today.sewing }, { label:'Kaj & Btn', value:today.kajbtn },
+      { label:'Finishing', value:today.finishing },
+    ];
+    document.getElementById('todayPanel').innerHTML = `<div class="funnel">${rows.map(r=>`
+      <div class="funnel-row" style="grid-template-columns:100px 1fr 90px;">
+        <div class="stage-name">${r.label}</div>
+        <div class="funnel-track"><div class="funnel-fill" style="width:${Math.min(100, pct(r.value, Math.max(1,...rows.map(x=>x.value)))*100).toFixed(1)}%; background:${cv('--accent')};"></div></div>
+        <div class="stage-fig"><b class="tabular">${fmt(r.value)}</b></div>
+      </div>`).join('')}</div>
+      <div class="note-box" style="margin-top:14px;">Most recent day with any dated row logged. Older rows without a date aren't counted here &mdash; see the Daily &amp; Manpower tab for the full trend as you backfill dates.</div>`;
+  } else {
+    document.getElementById('todayPanel').innerHTML = `<div class="empty-note">No dated rows yet in Cutting Output / Loading / Sewing / KAJ&amp;BTN / finishing. Once you start entering dates there, today's numbers will show up here automatically.</div>`;
+  }
+
+  // Line-wise snapshot — exact cumulative numbers per line, from the master tab.
   const byLine = LINES.map(l=>{
     const st = STYLES.filter(s=>s.line===l);
-    return { line:l, order:sum(st,s=>s.order), cutting:sum(st,s=>s.cutting) };
+    return {
+      line:l, order:sum(st,s=>s.order), cutting:sum(st,s=>s.cutting),
+      loading:sum(st,s=>s.loading), sewing:sum(st,s=>s.sewing), wip:sum(st,s=>s.loading-s.sewing),
+    };
   });
-  document.getElementById('lineChart').innerHTML = groupedBarChart({
-    categories: byLine.map(x=>x.line),
-    series:[ { name:"Order qty", values:byLine.map(x=>x.order), color:cv('--border') },
-             { name:"Cut", values:byLine.map(x=>x.cutting), color:cv('--accent') } ],
-    height:200
-  }) + `<div class="legend-row" style="margin-top:8px;">
-      <div class="legend-item"><span class="sw" style="background:${cv('--border')}"></span>Order qty</div>
-      <div class="legend-item"><span class="sw" style="background:${cv('--accent')}"></span>Cut</div>
-    </div>`;
-
-  const brands = [...new Set(STYLES.map(s=>s.brand))];
-  const byBrand = brands.map(b=>{
-    const st = STYLES.filter(s=>s.brand===b);
-    return { brand:b, order:sum(st,s=>s.order), cutting:sum(st,s=>s.cutting) };
-  });
-  document.getElementById('brandChart').innerHTML = groupedBarChart({
-    categories: byBrand.map(x=>x.brand),
-    series:[ { name:"Order qty", values:byBrand.map(x=>x.order), color:cv('--border') },
-             { name:"Cut", values:byBrand.map(x=>x.cutting), color:cv('--accent2') } ],
-    height:200
-  }) + `<div class="legend-row" style="margin-top:8px;">
-      <div class="legend-item"><span class="sw" style="background:${cv('--border')}"></span>Order qty</div>
-      <div class="legend-item"><span class="sw" style="background:${cv('--accent2')}"></span>Cut</div>
-    </div>`;
+  const lsHead = `<thead><tr><th>Line</th><th class="num">Order</th><th class="num">Cut</th><th class="num">Loaded</th><th class="num">Sewn</th><th class="num">WIP</th><th class="num">% Sewn</th></tr></thead>`;
+  const lsBody = byLine.map(l=>{
+    const p = pct(l.sewing, l.order);
+    return `<tr><td>${l.line}</td><td class="num">${fmt(l.order)}</td><td class="num">${fmt(l.cutting)}</td>
+      <td class="num">${fmt(l.loading)}</td><td class="num">${fmt(l.sewing)}</td><td class="num">${fmt(l.wip)}</td>
+      <td class="num" style="color:${p>0.6?cv('--good'):p>0.3?cv('--warn'):cv('--bad')}">${pctStr(p)}</td></tr>`;
+  }).join('');
+  document.getElementById('lineSnapshotTable').innerHTML = lsHead + `<tbody>${lsBody}</tbody>`;
 }
 
 /* ============================================================
@@ -828,7 +936,21 @@ function openStyleDetail(s){
     {name:"Order qty", value:s.order},{name:"Cutting", value:s.cutting},{name:"Loading", value:s.loading},
     {name:"Sewing out", value:s.sewing},{name:"Kaj & Btn", value:s.kajbtn},{name:"Finishing", value:s.finishing},{name:STAGE6_LABEL, value:s.packing},
   ];
-  const contractorsForStyle = CONTRACTOR_ENTRIES.filter(e=>e.style===s.style && e.color===s.color);
+  const contractorsForStyle = CONTRACTOR_ENTRIES.filter(e=> styleMatches(e.style, s.style) && (!e.color || !s.color || e.color.toUpperCase()===s.color.toUpperCase()));
+
+  // Group every column exactly as it appears in the Production sheet, in sheet order,
+  // under the section it belongs to (request: "all the headers to be shown as per sheet").
+  const rawGroups = [];
+  (s.raw||[]).forEach(cell=>{
+    let grp = rawGroups[rawGroups.length-1];
+    if(!grp || grp.section !== cell.section){ grp = { section: cell.section, cells: [] }; rawGroups.push(grp); }
+    grp.cells.push(cell);
+  });
+  const rawHtml = rawGroups.map(g=>`
+    <div class="detail-section-title">${g.section}</div>
+    ${g.cells.map(c=>`<div class="fabric-row"><span>${c.label}</span><b>${formatCellValue(c.value)}</b></div>`).join('')}
+  `).join('');
+
   document.getElementById('detailPanel').innerHTML = `
     <div class="detail-head">
       <div><div class="detail-title">${s.style}</div>
@@ -849,15 +971,12 @@ function openStyleDetail(s){
         <div class="stage-fig"><b class="tabular">${fmt(st.value)}</b></div>
       </div>`).join('')}
     </div>
-    <div class="detail-section-title">Fabric</div>
-    <div class="fabric-row"><span>Fabric received</span><b>${fmt(s.fabricReceive)} m</b></div>
-    <div class="fabric-row"><span>Consumption avg.</span><b>${s.avg.toFixed(2)} m/pc</b></div>
-    <div class="fabric-row"><span>Fabric used</span><b>${fmt(s.usedFabric)} m</b></div>
-    <div class="fabric-row"><span>Balance fabric</span><b style="color:${s.balFabric<0?cv('--bad'):'inherit'}">${s.balFabric<0?'&minus;':''}${fmt(Math.abs(s.balFabric))} m</b></div>
     ${contractorsForStyle.length ? `
     <div class="detail-section-title">Stitching contractors on this style</div>
     ${contractorsForStyle.map(c=>`<div class="fabric-row"><span>${c.name} <span style="color:var(--muted)">(${c.line})</span></span><b>${fmt(c.load)} loaded &middot; ${fmt(c.sew)} sewn</b></div>`).join('')}
     ` : `<div class="detail-section-title">Stitching</div><div class="fabric-row"><span>Not yet assigned to a contractor</span><b>&mdash;</b></div>`}
+    <div class="detail-section-title" style="margin-top:26px; padding-top:14px; border-top:1px solid var(--border);">All sheet columns, as entered</div>
+    ${rawHtml || `<div class="empty-note">No raw column data captured.</div>`}
   `;
   document.getElementById('overlay').hidden = false;
   document.getElementById('closeDetail').addEventListener('click', closeDetail);
@@ -867,6 +986,35 @@ function closeDetail(){ document.getElementById('overlay').hidden = true; }
 /* ============================================================
    Render: Daily & Manpower
    ============================================================ */
+function renderDailyStageChart(){
+  const days = DAILY_STAGE.dates;
+  const box = document.getElementById('dailyStageChart');
+  if(!days.length){
+    box.innerHTML = `<div class="empty-note">No dated rows yet. As you fill in the DATE column on new Cutting Output / Loading / Sewing / KAJ&amp;BTN / finishing rows, each day will show up here.</div>`;
+    document.getElementById('dailyStageLegend').innerHTML = '';
+  } else {
+    const palette = [cv('--accent'), cv('--accent2'), cv('--good'), cv('--bad'), cv('--muted')];
+    const stages = [
+      {key:'cutting', name:'Cutting'}, {key:'loading', name:'Loading'}, {key:'sewing', name:'Sewing'},
+      {key:'kajbtn', name:'Kaj & Btn'}, {key:'finishing', name:'Finishing'},
+    ];
+    const series = stages.map((s,i)=>({ name:s.name, color:palette[i], values: days.map(d=>d[s.key]) }));
+    box.innerHTML = groupedBarChart({ categories: days.map(d=>d.label), series, height:240 });
+    document.getElementById('dailyStageLegend').innerHTML = stages.map((s,i)=>
+      `<div class="legend-item"><span class="sw" style="background:${palette[i]}"></span>${s.name}</div>`).join('');
+  }
+  const note = document.getElementById('dailyStageNote');
+  note.innerHTML = DAILY_STAGE.undatedCount>0
+    ? `<b>${DAILY_STAGE.undatedCount} row${DAILY_STAGE.undatedCount>1?'s':''}</b> across these tabs don't have a date yet, so they're left out of this daily view (they're still counted in the cumulative totals elsewhere). Backfill their DATE column to bring them in here.`
+    : `Every row in these tabs currently has a date &mdash; this chart reflects all of them.`;
+}
+function renderDailyStageTable(){
+  const days = DAILY_STAGE.dates;
+  const head = `<thead><tr><th>Date</th><th class="num">Cutting</th><th class="num">Loading</th><th class="num">Sewing</th><th class="num">Kaj &amp; Btn</th><th class="num">Finishing</th></tr></thead>`;
+  const body = days.map(d=>`<tr><td>${d.label}</td><td class="num">${fmt(d.cutting)}</td><td class="num">${fmt(d.loading)}</td><td class="num">${fmt(d.sewing)}</td><td class="num">${fmt(d.kajbtn)}</td><td class="num">${fmt(d.finishing)}</td></tr>`).join('');
+  document.getElementById('dailyStageTable').innerHTML = head + `<tbody>${body || '<tr><td>No dated rows yet.</td></tr>'}</tbody>`;
+}
+
 let lineFilter="ALL";
 function renderLineFilters(){
   const mpLines = [...new Set(MANPOWER.workerCols.map(w=>w.line))];
@@ -906,16 +1054,6 @@ function renderAttendanceTable(){
   }).join('');
   document.getElementById('attendanceTable').innerHTML = head + `<tbody>${body}</tbody>`;
 }
-function renderStageOutputChart(){
-  const stages = [
-    {name:"Cutting", value:TOTALS.cutting},{name:"Loading", value:TOTALS.loading},{name:"Sewing", value:TOTALS.sewing},
-    {name:"Kaj&Btn", value:TOTALS.kajbtn},{name:"Finishing", value:TOTALS.finishing},{name:STAGE6_LABEL, value:TOTALS.packing},
-  ];
-  document.getElementById('stageOutputChart').innerHTML = groupedBarChart({
-    categories: stages.map(s=>s.name), series:[{name:"Pieces", values:stages.map(s=>s.value), color:cv('--accent')}], height:220
-  });
-}
-
 /* ============================================================
    Render: Contractors
    ============================================================ */
@@ -927,7 +1065,7 @@ function renderContractorKpis(){
   const kpis = [
     { label:"Total pieces loaded", value:fmt(totalLoad), unit:"pcs", foot:`across ${CONTRACTORS.length} contractors` },
     { label:"Total pieces sewn", value:fmt(totalSew), unit:"pcs", foot:pctStr(pct(totalSew,totalLoad))+" of loaded" },
-    { label:"Highest efficiency", value: best?best.name:'—', unit:"", foot: best?pctStr(best.eff)+" sewn / loaded":"no data" },
+    { label:"Highest completion rate", value: best?best.name:'—', unit:"", foot: best?pctStr(best.eff)+" sewn / loaded":"no data" },
     { label:"Heaviest loaded", value: busiest?busiest.name:'—', unit:"", foot: busiest?fmt(busiest.load)+" pcs assigned":"no data" },
   ];
   document.getElementById('contractorKpis').innerHTML = kpis.map(k=>`
@@ -948,7 +1086,7 @@ function renderContractorGroups(){
           ${hBarPair({label:"Sewn", a:c.sew, aColor:cv('--good'), max:maxLoad})}
         </div>
         <div class="cc-foot">
-          <span class="cc-eff" style="color:${c.eff>=0.6?cv('--good'):c.eff>=0.3?cv('--warn'):cv('--bad')}">${pctStr(c.eff)} efficiency</span>
+          <span class="cc-eff" style="color:${c.eff>=0.6?cv('--good'):c.eff>=0.3?cv('--warn'):cv('--bad')}">${pctStr(c.eff)} complete</span>
           <span class="cc-styles">${c.entries.length} style${c.entries.length>1?'s':''} &middot; ${fmt(c.wip)} WIP</span>
         </div>
       </div>`;
@@ -959,7 +1097,7 @@ function renderContractorGroups(){
 }
 function renderContractorTable(){
   const rows = [...CONTRACTOR_ENTRIES].sort((a,b)=> a.line.localeCompare(b.line) || a.name.localeCompare(b.name));
-  const head = `<thead><tr><th>Contractor</th><th>Line</th><th>Style</th><th>Color</th><th class="num">Loaded</th><th class="num">Sewn</th><th class="num">WIP</th><th class="num">Efficiency</th></tr></thead>`;
+  const head = `<thead><tr><th>Contractor</th><th>Line</th><th>Style</th><th>Color</th><th class="num">Loaded</th><th class="num">Sewn</th><th class="num">WIP</th><th class="num">Completion</th></tr></thead>`;
   const body = rows.map(r=>{
     const wip = r.load - r.sew, eff = pct(r.sew,r.load);
     return `<tr><td>${r.name}</td><td>${r.line}</td><td class="tabular">${r.style}</td><td>${r.color}</td>
@@ -986,7 +1124,8 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeDetail(); 
 function renderAll(){
   renderOverview();
   renderStyleFilters(); renderStyleGrid();
-  renderLineFilters(); renderManpowerChart(); renderAttendanceTable(); renderStageOutputChart();
+  renderDailyStageChart(); renderDailyStageTable();
+  renderLineFilters(); renderManpowerChart(); renderAttendanceTable();
   renderContractorKpis(); renderContractorGroups(); renderContractorTable();
 }
 
@@ -1007,12 +1146,18 @@ async function loadAll(isRetry){
   if(refreshBtn){ refreshBtn.disabled = true; refreshLabel.textContent = 'Refreshing…'; }
   setStatus('loading', 'Refreshing from sheet…');
   try{
-    const [masterRows, manpowerRows, stitchingRows] = await Promise.all([
-      fetchTab(TABS.master), fetchTab(TABS.manpower), fetchTab(TABS.stitching)
+    const [masterRows, manpowerRows, loadingRows, sewingRows, kajbtnRows, finishingRows, cuttingOutputRows] = await Promise.all([
+      fetchTab(TABS.master), fetchTab(TABS.manpower),
+      fetchTab(TABS.loading), fetchTab(TABS.sewing), fetchTab(TABS.kajbtn),
+      fetchTab(TABS.finishing), fetchTab(TABS.cuttingOutput),
     ]);
     STYLES = parseMaster(masterRows);
     MANPOWER = parseManpower(manpowerRows);
-    CONTRACTOR_ENTRIES = parseStitching(stitchingRows);
+    STAGE_LOG.loading = parseStageTab(loadingRows, h=>h.includes('loading') && h.includes('qty'), 'Loading').entries;
+    STAGE_LOG.sewing = parseStageTab(sewingRows, h=>h.includes('sewing') && h.includes('qty'), 'Sewing').entries;
+    STAGE_LOG.kajbtn = parseStageTab(kajbtnRows, h=>h.includes('kaj'), 'KAJ&BTN').entries;
+    STAGE_LOG.finishing = parseStageTab(finishingRows, h=>h.includes('finishing') && h.includes('qty'), 'finishing').entries;
+    STAGE_LOG.cuttingOutput = parseStageTab(cuttingOutputRows, h=>h==='cutting', 'cutting output').entries;
     recompute();
     renderAll();
 
@@ -1044,7 +1189,7 @@ async function loadAll(isRetry){
         document.getElementById('bootErrorBody').innerHTML = `
           <ol>
             <li>Open the sheet &rarr; <b>Share</b> &rarr; set general access to <b>"Anyone with the link" &ndash; Viewer</b>. This file reads the sheet directly from your browser, not through your Claude session, so it needs the sheet to be link-viewable.</li>
-            <li>Double-check the tab names in the sheet are still exactly <code>Production</code>, <code>Manpower</code> and <code>STICHING</code> &mdash; renaming a tab breaks the link to it here.</li>
+            <li>Double-check the tab names in the sheet are still exactly <code>Production</code>, <code>Manpower</code>, <code>Loading</code>, <code>Sewing</code>, <code>KAJ&amp;BTN</code>, <code>finishing</code> and <code>cutting output</code> &mdash; renaming a tab breaks the link to it here.</li>
             <li>Then hit refresh below.</li>
           </ol>`;
       }
