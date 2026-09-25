@@ -820,28 +820,25 @@ function generateAlerts(){
   const notStarted = STYLES.filter(s=>s.cutting===0 && s.fabricReceive>0);
   notStarted.forEach(s=> alerts.push({level:"bad", text:`<b>${s.style} (${s.color})</b> hasn't started cutting &mdash; ${fmt(s.fabricReceive)}m fabric received, 0 pieces cut against a ${fmt(s.order)} pc order.`}));
 
-  // Once a style is (nearly) fully cut, its downstream stages should catch up to 100%
-  // of what's ahead of them — this shows each stage's actual catch-up %, stage to stage
-  // (not against the order qty), so a style that's stuck at 98% stitching or 98% finishing
-  // shows up with those real numbers instead of a silent gap.
+  // Once cutting has been marked OUT by the floor, three things are worth checking:
+  // 1) cutting itself may have been closed out under 100% of the order qty,
+  // 2) stitching (sewn) should be catching up to 98%+ of the cut qty,
+  // 3) finishing should be catching up to 98%+ of the sewn (stitched) qty.
+  // Any style tripping one of these three shows up here with its real numbers.
   const chain = STYLES
-    .filter(s=> s.order>0 && s.cutting>0 && pct(s.cutting,s.order) >= 0.98)
+    .filter(s=> s.cutOut)
     .map(s=>{
-      const loadPct = pct(s.loading, s.cutting);   // cutting -> loading
-      const sewPct  = pct(s.sewing, s.loading);    // loading -> stitching
-      const finBase = s.kajbtn>0 ? s.kajbtn : s.sewing;
-      const kajPct  = s.loading>0 ? pct(s.kajbtn, s.loading) : 1; // loading -> kaj&btn
-      const finPct  = pct(s.finishing, finBase);   // kaj&btn (or stitching) -> finishing
-      const worst = Math.min(loadPct, sewPct, finPct);
-      return { s, loadPct, sewPct, kajPct, finPct, worst };
+      const cutPct = pct(s.cutting, s.order);     // cutting -> order
+      const sewPct = pct(s.sewing, s.cutting);    // stitching -> cutting
+      const finPct = pct(s.finishing, s.sewing);  // finishing -> stitching
+      const worst = Math.min(cutPct, sewPct, finPct);
+      return { s, cutPct, sewPct, finPct, worst };
     })
-    .filter(x=> x.worst < 0.999)
+    .filter(x=> x.cutPct < 0.999 || x.sewPct < 0.98 || x.finPct < 0.98)
     .sort((a,b)=> a.worst - b.worst);
 
-  chain.slice(0,6).forEach(({s,loadPct,sewPct,kajPct,finPct,worst})=>{
-    const steps = [`Cutting ${pctStr(1)}`, `Loading ${pctStr(loadPct)}`, `Stitching ${pctStr(sewPct)}`];
-    if(s.kajbtn>0) steps.push(`Kaj&amp;Btn ${pctStr(kajPct)}`);
-    steps.push(`Finishing ${pctStr(finPct)}`);
+  chain.slice(0,6).forEach(({s,cutPct,sewPct,finPct,worst})=>{
+    const steps = [`Cutting ${pctStr(cutPct)}`, `Stitching ${pctStr(sewPct)}`, `Finishing ${pctStr(finPct)}`];
     alerts.push({level: worst<0.9 ? "warn" : "info", text:`<b>${s.style} (${s.color})</b> — ${steps.join(' &rarr; ')}`});
   });
 
@@ -996,7 +993,7 @@ function renderStyleFilters(){
     b.addEventListener('click', ()=>{ styleFilter=b.dataset.cat; renderStyleFilters(); renderStyleGrid(); });
   });
 }
-function statusLabel(s){ return s.status==='new'?"Not started":s.status==='ok'?"On track":"Bottleneck"; }
+function statusLabel(s){ return s.status==='new' ? "Not started" : `In ${s.stage.name}`; }
 function renderStyleGrid(){
   const list = styleFilter==="ALL" ? STYLES : STYLES.filter(s=>s.category===styleFilter);
   document.getElementById('styleGrid').innerHTML = list.map(s=>`
