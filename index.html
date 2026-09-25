@@ -363,13 +363,9 @@
       <h2>Daily production</h2>
       <div class="hint" id="dailyStageRange">Pieces logged per day, from the dated rows in Cutting Output / Loading / Sewing / KAJ&amp;BTN / finishing</div>
     </div>
-    <div class="chart-card">
-      <div class="legend-row" id="dailyStageLegend"></div>
-      <div id="dailyStageChart"></div>
-      <div class="note-box" id="dailyStageNote"></div>
-    </div>
+    <div class="note-box" id="dailyStageNote" style="margin-bottom:12px;"></div>
     <div class="table-toolbar"><input type="text" id="dailyStageSearch" class="search-input" placeholder="Search date…"></div>
-    <div class="table-wrap" style="margin-top:12px;">
+    <div class="table-wrap">
       <table id="dailyStageTable"></table>
     </div>
 
@@ -825,20 +821,21 @@ function generateAlerts(){
   // 2) stitching (sewn) should be catching up to 98%+ of the cut qty,
   // 3) finishing should be catching up to 98%+ of the sewn (stitched) qty.
   // Any style tripping one of these three shows up here with its real numbers.
-  const chain = STYLES
-    .filter(s=> s.cutOut)
-    .map(s=>{
+  const chain = STYLES.map(s=>{
       const cutPct = pct(s.cutting, s.order);     // cutting -> order
       const sewPct = pct(s.sewing, s.cutting);    // stitching -> cutting
       const finPct = pct(s.finishing, s.sewing);  // finishing -> stitching
-      const worst = Math.min(cutPct, sewPct, finPct);
-      return { s, cutPct, sewPct, finPct, worst };
+      const issues = [];
+      if(s.cutOut && cutPct < 0.999) issues.push({ label:"Cutting", pct:cutPct });
+      if(s.stitchOut && sewPct < 0.98) issues.push({ label:"Stitching", pct:sewPct });
+      if(s.finOut && finPct < 0.98) issues.push({ label:"Finishing", pct:finPct });
+      return { s, issues, worst: issues.length ? Math.min(...issues.map(i=>i.pct)) : 1 };
     })
-    .filter(x=> x.cutPct < 0.999 || x.sewPct < 0.98 || x.finPct < 0.98)
+    .filter(x=> x.issues.length)
     .sort((a,b)=> a.worst - b.worst);
 
-  chain.slice(0,6).forEach(({s,cutPct,sewPct,finPct,worst})=>{
-    const steps = [`Cutting ${pctStr(cutPct)}`, `Stitching ${pctStr(sewPct)}`, `Finishing ${pctStr(finPct)}`];
+  chain.slice(0,6).forEach(({s,issues,worst})=>{
+    const steps = issues.map(i=>`${i.label} ${pctStr(i.pct)}`);
     alerts.push({level: worst<0.9 ? "warn" : "info", text:`<b>${s.style} (${s.color})</b> — ${steps.join(' &rarr; ')}`});
   });
 
@@ -890,6 +887,44 @@ function groupedBarChart({categories, series, height=220}){
   return `<svg viewBox="0 0 ${w} ${height}" width="100%" style="max-width:100%; height:auto; display:block;">
     <line x1="${padL}" y1="${padT+innerH}" x2="${w-padR}" y2="${padT+innerH}" stroke="${lineColor}" stroke-width="1.2"/>
     ${gridLines}${bars}${labels}
+  </svg>`;
+}
+function groupedLineChart({categories, series, height=220}){
+  const w=720, padL=40, padR=12, padT=14, padB=30;
+  const innerW=w-padL-padR, innerH=height-padT-padB;
+  const maxVal=Math.max(1, ...series.flatMap(s=>s.values));
+  const niceMax=Math.ceil(maxVal/10)*10 || 1;
+  const n=Math.max(1,categories.length);
+  const xAt = i => n===1 ? padL+innerW/2 : padL + innerW*(i/(n-1));
+  const yAt = v => padT + innerH - innerH*(v/niceMax);
+  const gridColor=cv('--grid'), textColor=cv('--muted'), lineColor=cv('--border');
+  let gridLines=""; const steps=4;
+  for(let i=0;i<=steps;i++){
+    const y=padT+innerH-(innerH*i/steps); const val=niceMax*i/steps;
+    gridLines += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="${gridColor}" stroke-width="1"/>`;
+    gridLines += `<text x="${padL-8}" y="${y+3}" text-anchor="end" font-size="9.5" fill="${textColor}">${Math.round(val)}</text>`;
+  }
+  // Thin the x-axis labels so they never overlap, no matter how many days there are —
+  // always show the first and last, plus as many evenly-spaced in-between as fit.
+  const maxLabels = Math.max(2, Math.floor(innerW/58));
+  const labelStep = Math.max(1, Math.ceil((n-1)/(maxLabels-1)) || 1);
+  let labels="";
+  categories.forEach((cat,i)=>{
+    if(i!==0 && i!==n-1 && i%labelStep!==0) return;
+    labels += `<text x="${xAt(i).toFixed(1)}" y="${height-8}" text-anchor="middle" font-size="10" fill="${textColor}">${cat}</text>`;
+  });
+  let paths="", dots="";
+  series.forEach(s=>{
+    const pts = s.values.map((v,i)=>[xAt(i), yAt(v||0)]);
+    const d = pts.map((p,i)=> (i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+    paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    pts.forEach((p,i)=>{
+      dots += `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6" fill="${s.color}"><title>${categories[i]} — ${s.name}: ${fmt(s.values[i]||0)}</title></circle>`;
+    });
+  });
+  return `<svg viewBox="0 0 ${w} ${height}" width="100%" style="max-width:100%; height:auto; display:block;">
+    <line x1="${padL}" y1="${padT+innerH}" x2="${w-padR}" y2="${padT+innerH}" stroke="${lineColor}" stroke-width="1.2"/>
+    ${gridLines}${paths}${dots}${labels}
   </svg>`;
 }
 function hBarPair({label,a,aColor,max}){
@@ -1080,27 +1115,11 @@ function closeDetail(){ document.getElementById('overlay').hidden = true; }
 /* ============================================================
    Render: Daily & Manpower
    ============================================================ */
-function renderDailyStageChart(){
-  const days = DAILY_STAGE.dates;
-  const box = document.getElementById('dailyStageChart');
-  if(!days.length){
-    box.innerHTML = `<div class="empty-note">No dated rows yet. As you fill in the DATE column on new Cutting Output / Loading / Sewing / KAJ&amp;BTN / finishing rows, each day will show up here.</div>`;
-    document.getElementById('dailyStageLegend').innerHTML = '';
-  } else {
-    const palette = [cv('--accent'), cv('--accent2'), cv('--good'), cv('--bad'), cv('--muted')];
-    const stages = [
-      {key:'cutting', name:'Cutting'}, {key:'loading', name:'Loading'}, {key:'sewing', name:'Sewing'},
-      {key:'kajbtn', name:'Kaj & Btn'}, {key:'finishing', name:'Finishing'},
-    ];
-    const series = stages.map((s,i)=>({ name:s.name, color:palette[i], values: days.map(d=>d[s.key]) }));
-    box.innerHTML = groupedBarChart({ categories: days.map(d=>d.label), series, height:240 });
-    document.getElementById('dailyStageLegend').innerHTML = stages.map((s,i)=>
-      `<div class="legend-item"><span class="sw" style="background:${palette[i]}"></span>${s.name}</div>`).join('');
-  }
+function renderDailyStageNote(){
   const note = document.getElementById('dailyStageNote');
   note.innerHTML = DAILY_STAGE.undatedCount>0
     ? `<b>${DAILY_STAGE.undatedCount} row${DAILY_STAGE.undatedCount>1?'s':''}</b> across these tabs don't have a date yet, so they're left out of this daily view (they're still counted in the cumulative totals elsewhere). Backfill their DATE column to bring them in here.`
-    : `Every row in these tabs currently has a date &mdash; this chart reflects all of them.`;
+    : `Every row in these tabs currently has a date &mdash; this table reflects all of them.`;
 }
 function renderDailyStageTable(){
   const days = DAILY_STAGE.dates;
@@ -1129,7 +1148,7 @@ function renderManpowerChart(){
     name: line, color: palette[i % palette.length],
     values: days.map(d => sum(MANPOWER.workerCols.filter(w=>w.line===line), w => d.vals[w.key] || 0))
   }));
-  document.getElementById('manpowerChart').innerHTML = groupedBarChart({ categories: days.map(d=>d.date), series, height:230 });
+  document.getElementById('manpowerChart').innerHTML = groupedLineChart({ categories: days.map(d=>d.date), series, height:230 });
   document.getElementById('manpowerLegend').innerHTML = lines.map((l,i)=>
     `<div class="legend-item"><span class="sw" style="background:${palette[i%palette.length]}"></span>${l} workers present</div>`).join('');
 }
@@ -1226,7 +1245,7 @@ wireTableSearch('contractorSearch', 'contractorTable');
 function renderAll(){
   renderOverview();
   renderStyleFilters(); renderStyleGrid();
-  renderDailyStageChart(); renderDailyStageTable();
+  renderDailyStageNote(); renderDailyStageTable();
   renderLineFilters(); renderManpowerChart(); renderAttendanceTable();
   renderContractorKpis(); renderContractorGroups(); renderContractorTable();
 }
