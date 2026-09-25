@@ -1,4 +1,4 @@
-<title>Vapi Floor Pulse</title>
+<title>Vapi Factory Tracker</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
 
@@ -150,7 +150,16 @@
   .alert b{ font-weight:600; }
   .empty-note{ font-size:12.5px; color:var(--muted); padding:6px 2px; }
 
-  .filter-row{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  .filter-row{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; align-items:center; }
+  .table-toolbar{ display:flex; justify-content:flex-end; margin-bottom:10px; }
+  .search-input{
+    width:100%; max-width:240px; background:var(--surface); border:1px solid var(--border); border-radius:9px;
+    padding:7px 12px 7px 30px; font-size:12.5px; color:var(--ink);
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23707C8C' stroke-width='1.6'%3E%3Ccircle cx='7' cy='7' r='4.6'/%3E%3Cpath d='M13.5 13.5 10.6 10.6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:9px center; background-size:13px 13px;
+  }
+  .search-input::placeholder{ color:var(--muted); }
+  .search-input:focus{ outline:none; border-color:var(--accent); }
   .chip-btn{
     background:var(--surface); border:1px solid var(--border); border-radius:100px;
     padding:6px 13px; font-size:12px; font-weight:600; color:var(--ink-soft); cursor:pointer;
@@ -288,9 +297,9 @@
 <header class="top">
   <div class="top-inner">
     <div class="brand">
-      <div class="brand-mark">VP</div>
+      <div class="brand-mark">VF</div>
       <div class="brand-text">
-        <h1>Vapi Floor Pulse</h1>
+        <h1>Vapi Factory Tracker</h1>
         <div class="sub">Cutting &rarr; Stitching &rarr; Finishing production tracker</div>
       </div>
     </div>
@@ -332,6 +341,7 @@
       </div>
       <div class="panel">
         <h3>Line-wise snapshot <span class="n">exact pieces at each stage</span></h3>
+        <div class="table-toolbar"><input type="text" id="lineSnapshotSearch" class="search-input" placeholder="Search line…"></div>
         <div class="table-wrap" style="border:none;">
           <table id="lineSnapshotTable"></table>
         </div>
@@ -358,6 +368,7 @@
       <div id="dailyStageChart"></div>
       <div class="note-box" id="dailyStageNote"></div>
     </div>
+    <div class="table-toolbar"><input type="text" id="dailyStageSearch" class="search-input" placeholder="Search date…"></div>
     <div class="table-wrap" style="margin-top:12px;">
       <table id="dailyStageTable"></table>
     </div>
@@ -376,6 +387,7 @@
       <div class="hint">Per worker, per day</div>
     </div>
     <div class="filter-row" id="lineFilters"></div>
+    <div class="table-toolbar"><input type="text" id="attendanceSearch" class="search-input" placeholder="Search worker…"></div>
     <div class="table-wrap">
       <table id="attendanceTable"></table>
     </div>
@@ -393,6 +405,7 @@
       <h2>Loading &amp; output by style</h2>
       <div class="hint">Every contractor &times; style assignment currently on the floor</div>
     </div>
+    <div class="table-toolbar"><input type="text" id="contractorSearch" class="search-input" placeholder="Search contractor, style, line…"></div>
     <div class="table-wrap">
       <table id="contractorTable"></table>
     </div>
@@ -670,6 +683,31 @@ function pct(n,d){ return d>0 ? (n/d) : 0; }
 function fmt(n){ return Math.round(n).toLocaleString('en-IN'); }
 function pctStr(x){ return (x*100).toFixed(1)+'%'; }
 function cv(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+/* ---------------- Table search (applies to every data table) ----------------
+   Each searchable table has a persistent <input> outside the table itself, so
+   its value survives that table's re-renders. Every render*Table() function
+   re-applies the current search value after rebuilding its rows. */
+function filterTableRows(tableId, query){
+  const q = (query||'').trim().toLowerCase();
+  const rows = document.querySelectorAll(`#${tableId} tbody tr`);
+  let shown = 0;
+  rows.forEach(tr=>{
+    const match = !q || tr.textContent.toLowerCase().includes(q);
+    tr.hidden = !match;
+    if(match) shown++;
+  });
+  return { total: rows.length, shown };
+}
+function wireTableSearch(inputId, tableId){
+  const input = document.getElementById(inputId);
+  if(!input) return;
+  input.addEventListener('input', ()=> filterTableRows(tableId, input.value));
+}
+function applySearch(inputId, tableId){
+  const input = document.getElementById(inputId);
+  filterTableRows(tableId, input ? input.value : '');
+}
 function formatCellValue(v){
   if(v===undefined||v===null||v==='') return '—';
   if(v==='TRUE') return 'Yes';
@@ -757,8 +795,30 @@ function generateAlerts(){
   const notStarted = STYLES.filter(s=>s.cutting===0 && s.fabricReceive>0);
   notStarted.forEach(s=> alerts.push({level:"bad", text:`<b>${s.style} (${s.color})</b> hasn't started cutting &mdash; ${fmt(s.fabricReceive)}m fabric received, 0 pieces cut against a ${fmt(s.order)} pc order.`}));
 
-  const sewBottleneck = STYLES.filter(s=> s.loading>1000 && s.pctSew < 0.35 && s.pctSew>=0);
-  sewBottleneck.forEach(s=> alerts.push({level:"warn", text:`<b>${s.style} (${s.color})</b> is stitching slowly: ${fmt(s.loading)} pcs loaded, only ${fmt(s.sewing)} (${pctStr(s.pctSew)}) sewn so far.`}));
+  // Once a style is (nearly) fully cut, its downstream stages should catch up to 100%
+  // of what's ahead of them — this shows each stage's actual catch-up %, stage to stage
+  // (not against the order qty), so a style that's stuck at 98% stitching or 98% finishing
+  // shows up with those real numbers instead of a silent gap.
+  const chain = STYLES
+    .filter(s=> s.order>0 && s.cutting>0 && pct(s.cutting,s.order) >= 0.98)
+    .map(s=>{
+      const loadPct = pct(s.loading, s.cutting);   // cutting -> loading
+      const sewPct  = pct(s.sewing, s.loading);    // loading -> stitching
+      const finBase = s.kajbtn>0 ? s.kajbtn : s.sewing;
+      const kajPct  = s.loading>0 ? pct(s.kajbtn, s.loading) : 1; // loading -> kaj&btn
+      const finPct  = pct(s.finishing, finBase);   // kaj&btn (or stitching) -> finishing
+      const worst = Math.min(loadPct, sewPct, finPct);
+      return { s, loadPct, sewPct, kajPct, finPct, worst };
+    })
+    .filter(x=> x.worst < 0.999)
+    .sort((a,b)=> a.worst - b.worst);
+
+  chain.slice(0,6).forEach(({s,loadPct,sewPct,kajPct,finPct,worst})=>{
+    const steps = [`Cutting ${pctStr(1)}`, `Loading ${pctStr(loadPct)}`, `Stitching ${pctStr(sewPct)}`];
+    if(s.kajbtn>0) steps.push(`Kaj&amp;Btn ${pctStr(kajPct)}`);
+    steps.push(`Finishing ${pctStr(finPct)}`);
+    alerts.push({level: worst<0.9 ? "warn" : "info", text:`<b>${s.style} (${s.color})</b> — ${steps.join(' &rarr; ')}`});
+  });
 
   const cutNotLoaded = STYLES.filter(s=> s.cutting>0 && s.loading===0);
   if(cutNotLoaded.length){
@@ -896,6 +956,7 @@ function renderOverview(){
       <td class="num" style="color:${p>0.6?cv('--good'):p>0.3?cv('--warn'):cv('--bad')}">${pctStr(p)}</td></tr>`;
   }).join('');
   document.getElementById('lineSnapshotTable').innerHTML = lsHead + `<tbody>${lsBody}</tbody>`;
+  applySearch('lineSnapshotSearch', 'lineSnapshotTable');
 }
 
 /* ============================================================
@@ -1022,6 +1083,7 @@ function renderDailyStageTable(){
   const head = `<thead><tr><th>Date</th><th class="num">Cutting</th><th class="num">Loading</th><th class="num">Sewing</th><th class="num">Kaj &amp; Btn</th><th class="num">Finishing</th></tr></thead>`;
   const body = days.map(d=>`<tr><td>${d.label}</td><td class="num">${fmt(d.cutting)}</td><td class="num">${fmt(d.loading)}</td><td class="num">${fmt(d.sewing)}</td><td class="num">${fmt(d.kajbtn)}</td><td class="num">${fmt(d.finishing)}</td></tr>`).join('');
   document.getElementById('dailyStageTable').innerHTML = head + `<tbody>${body || '<tr><td>No dated rows yet.</td></tr>'}</tbody>`;
+  applySearch('dailyStageSearch', 'dailyStageTable');
 }
 
 let lineFilter="ALL";
@@ -1062,6 +1124,7 @@ function renderAttendanceTable(){
     return `<tr><td>${w.name}</td><td>${w.line}</td>${vals.map(v=>`<td class="num">${v===null||v===undefined?'&mdash;':v}</td>`).join('')}<td class="num">${avg.toFixed(1)}</td></tr>`;
   }).join('');
   document.getElementById('attendanceTable').innerHTML = head + `<tbody>${body}</tbody>`;
+  applySearch('attendanceSearch', 'attendanceTable');
 }
 /* ============================================================
    Render: Contractors
@@ -1114,6 +1177,7 @@ function renderContractorTable(){
       <td class="num" style="color:${eff>=0.6?cv('--good'):eff>=0.3?cv('--warn'):cv('--bad')}">${pctStr(eff)}</td></tr>`;
   }).join('');
   document.getElementById('contractorTable').innerHTML = head + `<tbody>${body}</tbody>`;
+  applySearch('contractorSearch', 'contractorTable');
 }
 
 /* ============================================================
@@ -1129,6 +1193,11 @@ document.getElementById('tabs').addEventListener('click', (e)=>{
 });
 document.getElementById('overlay').addEventListener('click', (e)=>{ if(e.target.id==='overlay') closeDetail(); });
 document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeDetail(); });
+
+wireTableSearch('lineSnapshotSearch', 'lineSnapshotTable');
+wireTableSearch('dailyStageSearch', 'dailyStageTable');
+wireTableSearch('attendanceSearch', 'attendanceTable');
+wireTableSearch('contractorSearch', 'contractorTable');
 
 function renderAll(){
   renderOverview();
