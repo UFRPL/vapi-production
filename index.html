@@ -938,10 +938,20 @@ function openStyleDetail(s){
   ];
   const contractorsForStyle = CONTRACTOR_ENTRIES.filter(e=> styleMatches(e.style, s.style) && (!e.color || !s.color || e.color.toUpperCase()===s.color.toUpperCase()));
 
-  // Group every column exactly as it appears in the Production sheet, in sheet order,
-  // under the section it belongs to (request: "all the headers to be shown as per sheet").
+  // Condensed "everything else the sheet tracks" — the pipeline funnel above already
+  // covers order/cutting/loading/sewing/kaj&btn/finishing/packing, so skip those columns
+  // plus their WIP/OUT/% siblings here and only surface what isn't shown elsewhere,
+  // and only when it actually has a value entered.
+  const SKIP_LABELS = new Set(['SR.NO','BRAND','STYLE NO','COLOR','ORDER QTY','CATEGORY','LOCATION','MERCHANT',
+    'CUTTING','TOTAL LOADING QTY','TOTAL SEWING OUT','TOTAL KAJ& BTN','TOTAL FINISHING QTY']);
+  function skippable(label){
+    const l = label.trim().toUpperCase();
+    return SKIP_LABELS.has(l) || l==='WIP' || l==='OUT' || l.startsWith('%');
+  }
   const rawGroups = [];
   (s.raw||[]).forEach(cell=>{
+    if(skippable(cell.label)) return;
+    if(formatCellValue(cell.value)==='—') return;
     let grp = rawGroups[rawGroups.length-1];
     if(!grp || grp.section !== cell.section){ grp = { section: cell.section, cells: [] }; rawGroups.push(grp); }
     grp.cells.push(cell);
@@ -975,8 +985,7 @@ function openStyleDetail(s){
     <div class="detail-section-title">Stitching contractors on this style</div>
     ${contractorsForStyle.map(c=>`<div class="fabric-row"><span>${c.name} <span style="color:var(--muted)">(${c.line})</span></span><b>${fmt(c.load)} loaded &middot; ${fmt(c.sew)} sewn</b></div>`).join('')}
     ` : `<div class="detail-section-title">Stitching</div><div class="fabric-row"><span>Not yet assigned to a contractor</span><b>&mdash;</b></div>`}
-    <div class="detail-section-title" style="margin-top:26px; padding-top:14px; border-top:1px solid var(--border);">All sheet columns, as entered</div>
-    ${rawHtml || `<div class="empty-note">No raw column data captured.</div>`}
+    ${rawHtml ? `<div style="margin-top:26px; padding-top:14px; border-top:1px solid var(--border);"></div>${rawHtml}` : ``}
   `;
   document.getElementById('overlay').hidden = false;
   document.getElementById('closeDetail').addEventListener('click', closeDetail);
