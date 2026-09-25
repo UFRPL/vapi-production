@@ -10,6 +10,8 @@
     --good:#2F7D5A; --good-soft:#E1F1E9;
     --warn:#B8792A; --warn-soft:#F6ECDC;
     --bad:#B23B2E; --bad-soft:#F8E5E2;
+    --purple:#7D4FA3; --purple-soft:#EEE4F5;
+    --teal:#1E7A87; --teal-soft:#DFF0F2;
     --grid:#E4E8ED; --shadow: 0 1px 2px rgba(20,30,45,.06), 0 8px 24px -12px rgba(20,30,45,.12);
   }
   @media (prefers-color-scheme: dark){
@@ -21,6 +23,8 @@
       --good:#67C69A; --good-soft:#163325;
       --warn:#E0AA5D; --warn-soft:#3B2E17;
       --bad:#E37669; --bad-soft:#3A1E1A;
+      --purple:#B491D9; --purple-soft:#2E223B;
+      --teal:#5FC4D3; --teal-soft:#163338;
       --grid:#242F3D; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
     }
   }
@@ -32,6 +36,8 @@
     --good:#67C69A; --good-soft:#163325;
     --warn:#E0AA5D; --warn-soft:#3B2E17;
     --bad:#E37669; --bad-soft:#3A1E1A;
+    --purple:#B491D9; --purple-soft:#2E223B;
+    --teal:#5FC4D3; --teal-soft:#163338;
     --grid:#242F3D; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
   }
 
@@ -183,6 +189,12 @@
   .status-pill.warn{ background:var(--warn-soft); color:var(--warn); }
   .status-pill.bad{ background:var(--bad-soft); color:var(--bad); }
   .status-pill.new{ background:var(--surface-2); color:var(--muted); border:1px solid var(--border); }
+  /* one distinct color per pipeline stage, so the pill also tells you where a style is at a glance */
+  .status-pill.stage-cutting{ background:var(--accent-soft); color:var(--accent-ink); }
+  .status-pill.stage-stitching{ background:var(--warn-soft); color:var(--warn); }
+  .status-pill.stage-finishing{ background:var(--purple-soft); color:var(--purple); }
+  .status-pill.stage-qc{ background:var(--teal-soft); color:var(--teal); }
+  .status-pill.stage-dispatch{ background:var(--good-soft); color:var(--good); }
   .sc-meta{ font-size:11.5px; color:var(--muted); display:flex; gap:10px; flex-wrap:wrap; }
   .sc-bar-track{ height:6px; border-radius:4px; background:var(--surface-2); overflow:hidden; }
   .sc-bar-fill{ height:100%; background:var(--accent); border-radius:4px; }
@@ -525,6 +537,7 @@ function parseMaster(rows){
     packing:    findCol(H, h=>h.includes('packing qty') || (h.includes('packing') && h.includes('total'))),
     dispatched: findCol(H, h=>h.includes('dispatched qty')),
     totalShip:  findCol(H, h=>h.includes('total ship qty')),
+    qcQty:      findCol(H, h=>h==='qc qty'),
   };
   if(idx.style<0 || idx.order<0 || idx.cutting<0){
     throw new Error(`Found the header row in "${TABS.master}" but couldn't locate the STYLE NO / ORDER QTY / CUTTING columns — the sheet's column names may have changed.`);
@@ -588,6 +601,7 @@ function parseMaster(rows){
       finishing: idx.finishing>=0 ? toNum(row[idx.finishing]) : 0,
       packing: HAS_PACKING ? toNum(row[idx.packing]) : dispatched,
       dispatched, totalShip: idx.totalShip>=0 ? toNum(row[idx.totalShip]) : 0,
+      qcQty: idx.qcQty>=0 ? toNum(row[idx.qcQty]) : 0,
       cutOut: outIdx['Cutting']!==undefined ? isChecked(row[outIdx['Cutting']]) : false,
       stitchOut: outIdx['Stitching']!==undefined ? isChecked(row[outIdx['Stitching']]) : false,
       kajOut: outIdx['Kaj & Btn']!==undefined ? isChecked(row[outIdx['Kaj & Btn']]) : false,
@@ -745,14 +759,18 @@ function recompute(){
     // Which stage a style is "currently in", for the card's progress bar. This is driven
     // by the sheet's own OUT checkboxes (ticked when the floor closes that stage out),
     // not by hitting 100% of the qty — a style can move on at 98% if it's been ticked.
+    // After Finishing is ticked it goes to QC, and only once an actual Dispatched Qty
+    // has been entered does it move on to Dispatched.
     if(!s.cutOut){
       s.stage = { name:"Cutting", pct: pct(s.cutting, s.order), num:s.cutting, den:s.order };
     } else if(!s.stitchOut){
       s.stage = { name:"Stitching", pct: pct(s.sewing, s.cutting), num:s.sewing, den:s.cutting };
     } else if(!s.finOut){
       s.stage = { name:"Finishing", pct: pct(s.finishing, s.cutting), num:s.finishing, den:s.cutting };
+    } else if(s.dispatched<=0){
+      s.stage = { name:"QC", pct: pct(s.qcQty, s.cutting), num:s.qcQty, den:s.cutting };
     } else {
-      s.stage = { name:STAGE6_LABEL, pct: pct(s.packing, s.cutting), num:s.packing, den:s.cutting };
+      s.stage = { name:STAGE6_LABEL, pct: pct(s.dispatched, s.cutting), num:s.dispatched, den:s.cutting };
     }
   });
 
@@ -1029,6 +1047,16 @@ function renderStyleFilters(){
   });
 }
 function statusLabel(s){ return s.status==='new' ? "Not started" : `In ${s.stage.name}`; }
+function stagePillClass(s){
+  if(s.status==='new') return 'new';
+  switch(s.stage.name){
+    case 'Cutting': return 'stage-cutting';
+    case 'Stitching': return 'stage-stitching';
+    case 'Finishing': return 'stage-finishing';
+    case 'QC': return 'stage-qc';
+    default: return 'stage-dispatch';
+  }
+}
 function renderStyleGrid(){
   const list = styleFilter==="ALL" ? STYLES : STYLES.filter(s=>s.category===styleFilter);
   document.getElementById('styleGrid').innerHTML = list.map(s=>`
@@ -1038,7 +1066,7 @@ function renderStyleGrid(){
           <div class="sc-swatch" style="background:${s.hex}"></div>
           <div><div class="sc-style">${s.style}</div><div class="sc-color">${s.color}</div></div>
         </div>
-        <span class="status-pill ${s.status==='new'?'new':s.status==='ok'?'ok':'warn'}">${statusLabel(s)}</span>
+        <span class="status-pill ${stagePillClass(s)}">${statusLabel(s)}</span>
       </div>
       <div class="sc-meta"><span>${s.brand}</span><span>&middot;</span><span>${s.category}</span><span>&middot;</span><span>${s.line}</span></div>
       <div class="sc-bar-track"><div class="sc-bar-fill" style="width:${Math.min(100,s.stage.pct*100).toFixed(1)}%"></div></div>
@@ -1052,7 +1080,8 @@ function renderStyleGrid(){
 function openStyleDetail(s){
   const stages = [
     {name:"Order qty", value:s.order},{name:"Cutting", value:s.cutting},{name:"Loading", value:s.loading},
-    {name:"Sewing out", value:s.sewing},{name:"Kaj & Btn", value:s.kajbtn},{name:"Finishing", value:s.finishing},{name:STAGE6_LABEL, value:s.packing},
+    {name:"Sewing out", value:s.sewing},{name:"Kaj & Btn", value:s.kajbtn},{name:"Finishing", value:s.finishing},
+    {name:"QC", value:s.qcQty},{name:STAGE6_LABEL, value:s.dispatched},
   ];
   const contractorsForStyle = CONTRACTOR_ENTRIES.filter(e=> styleMatches(e.style, s.style) && (!e.color || !s.color || e.color.toUpperCase()===s.color.toUpperCase()));
 
@@ -1062,7 +1091,7 @@ function openStyleDetail(s){
   // and only when it actually has a value entered.
   const SKIP_LABELS = new Set(['SR.NO','BRAND','STYLE NO','COLOR','ORDER QTY','CATEGORY','LOCATION','MERCHANT',
     'CUTTING','TOTAL LOADING QTY','TOTAL SEWING OUT','TOTAL KAJ& BTN','TOTAL FINISHING QTY',
-    'TOP SAMPLE QTY','G.P.T SAMPLE QTY','BULK G.P.T SAMPLE QTY','TOTAL SHIP QTY']);
+    'TOP SAMPLE QTY','G.P.T SAMPLE QTY','BULK G.P.T SAMPLE QTY','TOTAL SHIP QTY','QC QTY','DISPATCHED QTY']);
   function skippable(label){
     const l = label.trim().toUpperCase();
     return SKIP_LABELS.has(l) || l==='WIP' || l==='OUT' || l.startsWith('%');
@@ -1086,7 +1115,7 @@ function openStyleDetail(s){
         <div class="detail-sub">${s.brand} &middot; ${s.color} &middot; ${s.category} &middot; ${s.line} &middot; merchant ${s.merchant}</div></div>
       <button class="detail-close" id="closeDetail">&times;</button>
     </div>
-    <span class="status-pill ${s.status==='new'?'new':s.status==='ok'?'ok':'warn'}">${statusLabel(s)}</span>
+    <span class="status-pill ${stagePillClass(s)}">${statusLabel(s)}</span>
     <div class="note-box" style="margin-top:12px;"><b>Currently in: ${s.stage.name}</b> &mdash; ${pctStr(s.stage.pct)} done (${fmt(s.stage.num)} of ${fmt(s.stage.den)}).</div>
     <div class="detail-kpis">
       <div class="dk"><div class="l">Order qty</div><div class="v">${fmt(s.order)}</div></div>
