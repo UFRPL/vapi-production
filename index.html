@@ -1029,7 +1029,8 @@ function openStyleDetail(s){
   // plus their WIP/OUT/% siblings here and only surface what isn't shown elsewhere,
   // and only when it actually has a value entered.
   const SKIP_LABELS = new Set(['SR.NO','BRAND','STYLE NO','COLOR','ORDER QTY','CATEGORY','LOCATION','MERCHANT',
-    'CUTTING','TOTAL LOADING QTY','TOTAL SEWING OUT','TOTAL KAJ& BTN','TOTAL FINISHING QTY']);
+    'CUTTING','TOTAL LOADING QTY','TOTAL SEWING OUT','TOTAL KAJ& BTN','TOTAL FINISHING QTY',
+    'TOP SAMPLE QTY','G.P.T SAMPLE QTY','BULK G.P.T SAMPLE QTY','TOTAL SHIP QTY']);
   function skippable(label){
     const l = label.trim().toUpperCase();
     return SKIP_LABELS.has(l) || l==='WIP' || l==='OUT' || l.startsWith('%');
@@ -1054,17 +1055,18 @@ function openStyleDetail(s){
       <button class="detail-close" id="closeDetail">&times;</button>
     </div>
     <span class="status-pill ${s.status==='new'?'new':s.status==='ok'?'ok':'warn'}">${statusLabel(s)}</span>
+    <div class="note-box" style="margin-top:12px;"><b>Currently in: ${s.stage.name}</b> &mdash; ${pctStr(s.stage.pct)} done (${fmt(s.stage.num)} of ${fmt(s.stage.den)}).</div>
     <div class="detail-kpis">
       <div class="dk"><div class="l">Order qty</div><div class="v">${fmt(s.order)}</div></div>
       <div class="dk"><div class="l">Cut / order</div><div class="v">${pctStr(s.pctCut)}</div></div>
       <div class="dk"><div class="l">Sewn / order</div><div class="v">${pctStr(s.pctSewOrder)}</div></div>
     </div>
-    <div class="detail-section-title">Pipeline</div>
+    <div class="detail-section-title">Pipeline &mdash; where this style is, and how much of the order has reached each stage</div>
     <div class="funnel">
       ${stages.map(st=>`<div class="funnel-row">
         <div class="stage-name">${st.name}</div>
         <div class="funnel-track"><div class="funnel-fill" style="width:${Math.min(100,pct(st.value,s.order)*100).toFixed(1)}%; background:${cv('--accent')};"></div></div>
-        <div class="stage-fig"><b class="tabular">${fmt(st.value)}</b></div>
+        <div class="stage-fig"><b class="tabular">${fmt(st.value)}</b><span class="pct">${pctStr(pct(st.value,s.order))}</span></div>
       </div>`).join('')}
     </div>
     ${contractorsForStyle.length ? `
