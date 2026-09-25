@@ -563,6 +563,14 @@ function parseMaster(rows){
     colMeta.push({ idx:i, label, section: curSection });
   });
 
+  // Each stage group has its own "OUT" checkbox column (Cutting OUT, Stitching OUT,
+  // Kaj&Btn OUT, Finishing OUT) — a TRUE/FALSE tick the floor uses to mark that stage
+  // as officially closed out, independent of the raw quantity %. Stage advancement on
+  // the style cards is driven by these ticks, not by hitting 100% of the qty.
+  const outIdx = {};
+  colMeta.forEach(c=>{ if(c.label.trim().toUpperCase()==='OUT' && !(c.section in outIdx)) outIdx[c.section]=c.idx; });
+  function isChecked(v){ return cellStr(v).trim().toUpperCase()==='TRUE'; }
+
   const styles=[]; let blank=0;
   for(let r=headerIdx+1;r<rows.length;r++){
     const row=rows[r];
@@ -584,6 +592,10 @@ function parseMaster(rows){
       finishing: idx.finishing>=0 ? toNum(row[idx.finishing]) : 0,
       packing: HAS_PACKING ? toNum(row[idx.packing]) : dispatched,
       dispatched, totalShip: idx.totalShip>=0 ? toNum(row[idx.totalShip]) : 0,
+      cutOut: outIdx['Cutting']!==undefined ? isChecked(row[outIdx['Cutting']]) : false,
+      stitchOut: outIdx['Stitching']!==undefined ? isChecked(row[outIdx['Stitching']]) : false,
+      kajOut: outIdx['Kaj & Btn']!==undefined ? isChecked(row[outIdx['Kaj & Btn']]) : false,
+      finOut: outIdx['Finishing']!==undefined ? isChecked(row[outIdx['Finishing']]) : false,
       raw: colMeta.map(c => ({ label:c.label, section:c.section, value: cellStr(row[c.idx]) })),
     });
   }
@@ -733,6 +745,19 @@ function recompute(){
     else if (s.pctLoad < 0.5 || (s.loading>0 && s.pctSew < 0.35 && s.cutting>1500)) s.status = "warn";
     else if (s.pctSewOrder >= 0.85 || s.packing>0) s.status = "ok";
     else s.status = "warn";
+
+    // Which stage a style is "currently in", for the card's progress bar. This is driven
+    // by the sheet's own OUT checkboxes (ticked when the floor closes that stage out),
+    // not by hitting 100% of the qty — a style can move on at 98% if it's been ticked.
+    if(!s.cutOut){
+      s.stage = { name:"Cutting", pct: pct(s.cutting, s.order), num:s.cutting, den:s.order };
+    } else if(!s.stitchOut){
+      s.stage = { name:"Stitching", pct: pct(s.sewing, s.cutting), num:s.sewing, den:s.cutting };
+    } else if(!s.finOut){
+      s.stage = { name:"Finishing", pct: pct(s.finishing, s.cutting), num:s.finishing, den:s.cutting };
+    } else {
+      s.stage = { name:STAGE6_LABEL, pct: pct(s.packing, s.cutting), num:s.packing, den:s.cutting };
+    }
   });
 
   TOTALS = {
@@ -984,8 +1009,8 @@ function renderStyleGrid(){
         <span class="status-pill ${s.status==='new'?'new':s.status==='ok'?'ok':'warn'}">${statusLabel(s)}</span>
       </div>
       <div class="sc-meta"><span>${s.brand}</span><span>&middot;</span><span>${s.category}</span><span>&middot;</span><span>${s.line}</span></div>
-      <div class="sc-bar-track"><div class="sc-bar-fill" style="width:${Math.min(100,s.pctCut*100).toFixed(1)}%"></div></div>
-      <div class="sc-foot"><span>Cut ${pctStr(s.pctCut)}</span><b class="tabular">${fmt(s.cutting)}/${fmt(s.order)}</b></div>
+      <div class="sc-bar-track"><div class="sc-bar-fill" style="width:${Math.min(100,s.stage.pct*100).toFixed(1)}%"></div></div>
+      <div class="sc-foot"><span>${s.stage.name} ${pctStr(s.stage.pct)}</span><b class="tabular">${fmt(s.stage.num)}/${fmt(s.stage.den)}</b></div>
     </button>
   `).join('') || `<div class="empty-note">No styles in this category.</div>`;
   document.querySelectorAll('#styleGrid .style-card').forEach(card=>{
