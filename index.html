@@ -90,6 +90,11 @@
   }
   .refresh-btn:disabled{ opacity:.6; cursor:default; }
   .refresh-btn svg{ width:12px; height:12px; }
+  .sheet-link-btn{
+    background:var(--surface); color:var(--ink-soft); border:1px solid var(--border);
+    text-decoration:none;
+  }
+  .sheet-link-btn:hover{ border-color:var(--accent); color:var(--accent-ink); }
 
   nav.tabs{
     max-width:1180px; margin:0 auto; padding:14px 20px 0 20px;
@@ -317,6 +322,10 @@
     </div>
     <div class="status-cluster">
       <div class="meta-pill"><span class="dot" id="statusDot"></span><span id="statusText">Live &middot; updated just now</span></div>
+      <a class="refresh-btn sheet-link-btn" id="openSheetBtn" href="#" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M6 2.5v11"/></svg>
+        <span>Open sheet</span>
+      </a>
       <button class="refresh-btn" id="refreshBtn">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3.6H9.9"/></svg>
         <span id="refreshLabel">Refresh</span>
@@ -439,6 +448,8 @@
    Google login.
    ============================================================ */
 const SHEET_ID = "1PqhDx_nUmSK-F7Q022FySRf6GaBwo_g6sWm9wWypkPE";
+const openSheetBtn = document.getElementById('openSheetBtn');
+if(openSheetBtn) openSheetBtn.href = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
 const TABS = {
   master:"Production", manpower:"Manpower",
   loading:"Loading", sewing:"Sewing", kajbtn:"KAJ&BTN", finishing:"finishing", cuttingOutput:"cutting output",
