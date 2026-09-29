@@ -476,6 +476,71 @@ function styleMatches(a,b){
 }
 const AUTO_REFRESH_MS = 3 * 60 * 1000; // 3 minutes
 
+/* ---------------- Predicted QC-ready date ----------------
+   Each dated stage-log tab (Loading/Sewing/KAJ&BTN/finishing) already carries a
+   qty per style/color/day, so a style's own recent pace can be projected forward
+   instead of guessed. Logic: look at the last 7 CALENDAR days that actually have
+   a dated entry for this style/color in a given stage's tab, average pcs/day over
+   just those logged days (so idle days don't dilute the pace), divide the qty still
+   left for that stage by that rate, and add the resulting number of days to today.
+   Finishing is what actually gates QC, so its own pace is used whenever it has any
+   recent dated entries; only when Finishing hasn't started logging yet does this
+   fall back to projecting Stitching's own pace as an interim milestone. */
+const MON_SHORT=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function addDaysLabel(days){
+  const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()+Math.max(0,Math.round(days)));
+  return `${d.getDate()} ${MON_SHORT[d.getMonth()]}`;
+}
+function styleColorMatch(e, style, color){
+  if(!styleMatches(e.style, style)) return false;
+  if(!color || !e.color) return true;
+  return e.color.trim().toUpperCase() === color.trim().toUpperCase();
+}
+function styleDailyRate(logKey, style, color, lookbackDays=7){
+  const cutoff = new Date(); cutoff.setHours(0,0,0,0); cutoff.setDate(cutoff.getDate()-lookbackDays);
+  const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth()+1).padStart(2,'0')}-${String(cutoff.getDate()).padStart(2,'0')}`;
+  const byDate = {};
+  (STAGE_LOG[logKey]||[]).forEach(e=>{
+    if(!e.date) return;
+    if(!styleColorMatch(e, style, color)) return;
+    if(e.date.key < cutoffKey) return;
+    byDate[e.date.key] = (byDate[e.date.key]||0) + e.qty;
+  });
+  const days = Object.keys(byDate);
+  if(!days.length) return null;
+  const total = days.reduce((a,k)=>a+byDate[k],0);
+  return { rate: total/days.length, daysLogged: days.length };
+}
+function computeStyleETA(s){
+  if(s.finOut){
+    return { label:"Ready for QC", detail:"Finishing has already been closed out for this style." };
+  }
+  const finRemaining = Math.max(0, s.cutting - s.finishing);
+  const finRate = styleDailyRate('finishing', s.style, s.color);
+  if(finRate && finRate.rate > 0){
+    const days = finRemaining>0 ? Math.ceil(finRemaining/finRate.rate) : 0;
+    return {
+      label: `Predicted ready for QC: ${addDaysLabel(days)}`,
+      detail: `Finishing has averaged ${fmt(finRate.rate)} pcs/day over its last ${finRate.daysLogged} logged day${finRate.daysLogged>1?'s':''}, with ${fmt(finRemaining)} pcs left to finish.`,
+    };
+  }
+  if(!s.stitchOut){
+    const stitchRemaining = Math.max(0, s.cutting - s.sewing);
+    const stitchRate = styleDailyRate('sewing', s.style, s.color);
+    if(stitchRate && stitchRate.rate > 0){
+      const days = stitchRemaining>0 ? Math.ceil(stitchRemaining/stitchRate.rate) : 0;
+      return {
+        label: `Predicted to reach Finishing: ${addDaysLabel(days)}`,
+        detail: `Stitching has averaged ${fmt(stitchRate.rate)} pcs/day over its last ${stitchRate.daysLogged} logged day${stitchRate.daysLogged>1?'s':''}, with ${fmt(stitchRemaining)} pcs left to sew. Finishing hasn't logged any dated entries yet, so a QC date can't be projected past that.`,
+      };
+    }
+  }
+  return {
+    label: "Not enough recent data to predict a date",
+    detail: "This style needs dated rows in the Sewing and/or Finishing tabs (within the last week) before a pace-based prediction is possible.",
+  };
+}
+
 function gvizUrl(sheetName){
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&_=${Date.now()}`;
 }
@@ -1128,6 +1193,7 @@ function openStyleDetail(s){
     </div>
     <span class="status-pill ${stagePillClass(s)}">${statusLabel(s)}</span>
     <div class="note-box" style="margin-top:12px;"><b>Currently in: ${s.stage.name}</b> &mdash; ${pctStr(s.stage.pct)} done (${fmt(s.stage.num)} of ${fmt(s.stage.den)}).</div>
+    ${(()=>{ const eta=computeStyleETA(s); return `<div class="note-box" style="margin-top:8px;"><b>${eta.label}</b><br>${eta.detail}</div>`; })()}
     <div class="detail-kpis">
       <div class="dk"><div class="l">Order qty</div><div class="v">${fmt(s.order)}</div></div>
       <div class="dk"><div class="l">Cut / order</div><div class="v">${pctStr(s.pctCut)}</div></div>
