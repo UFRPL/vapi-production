@@ -277,6 +277,26 @@
   .utm-group-title:first-child{ margin-top:0; }
   .utm-group-title .line{ flex:1; height:1px; background:var(--border); }
 
+  /* ---------- reco sheets ---------- */
+  .mini-btn{
+    background:var(--accent); color:#fff; border:1px solid var(--accent); border-radius:8px;
+    padding:6px 11px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;
+    text-decoration:none; display:inline-block; line-height:1.2;
+  }
+  .mini-btn:hover{ background:var(--accent-ink); border-color:var(--accent-ink); }
+  .mini-btn.ghost{ background:var(--surface); color:var(--ink-soft); border-color:var(--border); }
+  .mini-btn.ghost:hover{ border-color:var(--accent); color:var(--accent-ink); background:var(--surface); }
+  .mini-btn:disabled{ opacity:.6; cursor:default; }
+  .reco-actions{ display:flex; gap:6px; flex-wrap:wrap; }
+  .toggle-line{ font-size:12.5px; color:var(--ink-soft); display:flex; align-items:center; gap:6px; cursor:pointer; }
+  #toast{
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:200;
+    background:var(--ink); color:var(--surface); font-size:12.5px; padding:10px 16px; border-radius:10px;
+    box-shadow:var(--shadow); max-width:90vw; opacity:0; pointer-events:none; transition:opacity .2s ease;
+  }
+  #toast.show{ opacity:1; }
+  #toast.bad{ background:var(--bad); color:#fff; }
+
   /* ---------- boot states ---------- */
   #bootLoading, #bootError{
     max-width:520px; margin:14vh auto; text-align:center; padding:0 20px;
@@ -337,6 +357,7 @@
     <button data-view="styles">Styles</button>
     <button data-view="daily">Daily &amp; Manpower</button>
     <button data-view="contractors">Contractors &middot; Stitching</button>
+    <button data-view="reco">Reco sheets</button>
   </nav>
 </header>
 
@@ -428,13 +449,35 @@
     </div>
   </section>
 
+  <section class="view" id="view-reco">
+    <div class="section-head">
+      <h2>Reco sheets</h2>
+      <div class="hint">Fills the reco sheet from the live Production data &mdash; downloads as Excel</div>
+    </div>
+    <div class="filter-row">
+      <label class="toggle-line"><input type="checkbox" id="recoShowAll"> Also show styles that haven't been dispatched yet</label>
+      <input type="text" id="recoSearch" class="search-input" placeholder="Search style, colour, location&hellip;">
+    </div>
+    <div class="note-box" style="margin-top:0; margin-bottom:14px;">
+      <b>What gets filled:</b> style, colour, order qty, cut, sewing out, dispatched qty (QC / Fresh Pack), fabric received, avg, balance fabric, sewing rejection, TOP + Photo Shoot + GPT, and Fresh / B pieces (sheet columns AQ and AR).
+      Width, EMB, Fold Short, Missing and Short-from-Finishing are left blank for you to enter. All formulas stay live in the downloaded file.
+      <br><b>Email:</b> a file can't be attached automatically from a web page, so &ldquo;Email draft&rdquo; opens a Gmail draft to the right person &mdash; attach the downloaded sheet before sending.
+    </div>
+    <div class="table-wrap">
+      <table id="recoTable"></table>
+    </div>
+  </section>
+
 </div>
 </div>
+
+<div id="toast" role="status" aria-live="polite"></div>
 
 <div class="overlay" id="overlay" hidden>
   <div class="detail-panel" id="detailPanel"></div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 (function(){
 
@@ -475,71 +518,6 @@ function styleMatches(a,b){
   return a===b || a.startsWith(b) || b.startsWith(a);
 }
 const AUTO_REFRESH_MS = 3 * 60 * 1000; // 3 minutes
-
-/* ---------------- Predicted QC-ready date ----------------
-   Each dated stage-log tab (Loading/Sewing/KAJ&BTN/finishing) already carries a
-   qty per style/color/day, so a style's own recent pace can be projected forward
-   instead of guessed. Logic: look at the last 7 CALENDAR days that actually have
-   a dated entry for this style/color in a given stage's tab, average pcs/day over
-   just those logged days (so idle days don't dilute the pace), divide the qty still
-   left for that stage by that rate, and add the resulting number of days to today.
-   Finishing is what actually gates QC, so its own pace is used whenever it has any
-   recent dated entries; only when Finishing hasn't started logging yet does this
-   fall back to projecting Stitching's own pace as an interim milestone. */
-const MON_SHORT=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-function addDaysLabel(days){
-  const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()+Math.max(0,Math.round(days)));
-  return `${d.getDate()} ${MON_SHORT[d.getMonth()]}`;
-}
-function styleColorMatch(e, style, color){
-  if(!styleMatches(e.style, style)) return false;
-  if(!color || !e.color) return true;
-  return e.color.trim().toUpperCase() === color.trim().toUpperCase();
-}
-function styleDailyRate(logKey, style, color, lookbackDays=7){
-  const cutoff = new Date(); cutoff.setHours(0,0,0,0); cutoff.setDate(cutoff.getDate()-lookbackDays);
-  const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth()+1).padStart(2,'0')}-${String(cutoff.getDate()).padStart(2,'0')}`;
-  const byDate = {};
-  (STAGE_LOG[logKey]||[]).forEach(e=>{
-    if(!e.date) return;
-    if(!styleColorMatch(e, style, color)) return;
-    if(e.date.key < cutoffKey) return;
-    byDate[e.date.key] = (byDate[e.date.key]||0) + e.qty;
-  });
-  const days = Object.keys(byDate);
-  if(!days.length) return null;
-  const total = days.reduce((a,k)=>a+byDate[k],0);
-  return { rate: total/days.length, daysLogged: days.length };
-}
-function computeStyleETA(s){
-  if(s.finOut){
-    return { label:"Ready for QC", detail:"Finishing has already been closed out for this style." };
-  }
-  const finRemaining = Math.max(0, s.cutting - s.finishing);
-  const finRate = styleDailyRate('finishing', s.style, s.color);
-  if(finRate && finRate.rate > 0){
-    const days = finRemaining>0 ? Math.ceil(finRemaining/finRate.rate) : 0;
-    return {
-      label: `Predicted ready for QC: ${addDaysLabel(days)}`,
-      detail: `Finishing has averaged ${fmt(finRate.rate)} pcs/day over its last ${finRate.daysLogged} logged day${finRate.daysLogged>1?'s':''}, with ${fmt(finRemaining)} pcs left to finish.`,
-    };
-  }
-  if(!s.stitchOut){
-    const stitchRemaining = Math.max(0, s.cutting - s.sewing);
-    const stitchRate = styleDailyRate('sewing', s.style, s.color);
-    if(stitchRate && stitchRate.rate > 0){
-      const days = stitchRemaining>0 ? Math.ceil(stitchRemaining/stitchRate.rate) : 0;
-      return {
-        label: `Predicted to reach Finishing: ${addDaysLabel(days)}`,
-        detail: `Stitching has averaged ${fmt(stitchRate.rate)} pcs/day over its last ${stitchRate.daysLogged} logged day${stitchRate.daysLogged>1?'s':''}, with ${fmt(stitchRemaining)} pcs left to sew. Finishing hasn't logged any dated entries yet, so a QC date can't be projected past that.`,
-      };
-    }
-  }
-  return {
-    label: "Not enough recent data to predict a date",
-    detail: "This style needs dated rows in the Sewing and/or Finishing tabs (within the last week) before a pace-based prediction is possible.",
-  };
-}
 
 function gvizUrl(sheetName){
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&_=${Date.now()}`;
@@ -614,6 +592,10 @@ function parseMaster(rows){
     dispatched: findCol(H, h=>h.includes('dispatched qty')),
     totalShip:  findCol(H, h=>h.includes('total ship qty')),
     qcQty:      findCol(H, h=>h==='qc qty'),
+    sewRej:     findCol(H, h=>h==='sewing rejection qty'),
+    topSample:  findCol(H, h=>h==='top sample qty'),
+    gptSample:  findCol(H, h=>h==='g.p.t sample qty'),
+    bulkGpt:    findCol(H, h=>h==='bulk g.p.t sample qty'),
   };
   if(idx.style<0 || idx.order<0 || idx.cutting<0){
     throw new Error(`Found the header row in "${TABS.master}" but couldn't locate the STYLE NO / ORDER QTY / CUTTING columns — the sheet's column names may have changed.`);
@@ -678,6 +660,15 @@ function parseMaster(rows){
       packing: HAS_PACKING ? toNum(row[idx.packing]) : dispatched,
       dispatched, totalShip: idx.totalShip>=0 ? toNum(row[idx.totalShip]) : 0,
       qcQty: idx.qcQty>=0 ? toNum(row[idx.qcQty]) : 0,
+      // Extra fields used only by the reco sheet. Fresh / B pieces are read by column POSITION
+      // (AQ = 43rd, AR = 44th column), as asked, so they keep working whatever those headers say.
+      sewRej: idx.sewRej>=0 ? toNum(row[idx.sewRej]) : 0,
+      topSample: idx.topSample>=0 ? toNum(row[idx.topSample]) : 0,
+      gptSample: idx.gptSample>=0 ? toNum(row[idx.gptSample]) : 0,
+      bulkGpt: idx.bulkGpt>=0 ? toNum(row[idx.bulkGpt]) : 0,
+      balFabricRaw: idx.balFabric>=0 ? cellStr(row[idx.balFabric]) : '',
+      recoFresh: cellStr(row[42]),
+      recoB: cellStr(row[43]),
       cutOut: outIdx['Cutting']!==undefined ? isChecked(row[outIdx['Cutting']]) : false,
       stitchOut: outIdx['Stitching']!==undefined ? isChecked(row[outIdx['Stitching']]) : false,
       kajOut: outIdx['Kaj & Btn']!==undefined ? isChecked(row[outIdx['Kaj & Btn']]) : false,
@@ -1193,7 +1184,11 @@ function openStyleDetail(s){
     </div>
     <span class="status-pill ${stagePillClass(s)}">${statusLabel(s)}</span>
     <div class="note-box" style="margin-top:12px;"><b>Currently in: ${s.stage.name}</b> &mdash; ${pctStr(s.stage.pct)} done (${fmt(s.stage.num)} of ${fmt(s.stage.den)}).</div>
-    ${(()=>{ const eta=computeStyleETA(s); return `<div class="note-box" style="margin-top:8px;"><b>${eta.label}</b><br>${eta.detail}</div>`; })()}
+    <div class="reco-actions" style="margin-top:12px;">
+      <button class="mini-btn" id="detailRecoBtn">Create reco sheet</button>
+      <button class="mini-btn ghost" id="detailRecoMail">Email draft</button>
+    </div>
+    ${s.dispatched<=0 ? `<div style="font-size:11.5px; color:var(--muted); margin-top:6px;">Not dispatched yet &mdash; the QC / Fresh Pack figure will come out as 0.</div>` : ``}
     <div class="detail-kpis">
       <div class="dk"><div class="l">Order qty</div><div class="v">${fmt(s.order)}</div></div>
       <div class="dk"><div class="l">Cut / order</div><div class="v">${pctStr(s.pctCut)}</div></div>
@@ -1215,6 +1210,8 @@ function openStyleDetail(s){
   `;
   document.getElementById('overlay').hidden = false;
   document.getElementById('closeDetail').addEventListener('click', closeDetail);
+  document.getElementById('detailRecoBtn').addEventListener('click', (e)=> recoDownload(s, e.currentTarget));
+  document.getElementById('detailRecoMail').addEventListener('click', ()=> recoEmailDraft(s));
 }
 function closeDetail(){ document.getElementById('overlay').hidden = true; }
 
@@ -1330,6 +1327,145 @@ function renderContractorTable(){
 }
 
 /* ============================================================
+   Reco sheets
+   The reco template (a real .xlsx, with its formulas, merges and formatting) is embedded
+   below. Clicking "Create reco sheet" opens it, writes only the input cells, and downloads
+   the result. Everything happens in your browser; nothing is uploaded anywhere.
+   ============================================================ */
+const RECO_TEMPLATE_B64 = "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";
+const RECO_SHEET_PATH = 'xl/worksheets/sheet1.xml';
+
+function recoRecipient(location){
+  const l = (location||'').toUpperCase().replace(/\s+/g,'');
+  if(/UTM-?(III|3)/.test(l)) return 'salasar.creation2026@gmail.com';
+  return 'vapi.accounts@unitedmill.com';   // UTM-I, UTM-II, and anything unrecognised
+}
+function recoCellValue(raw){
+  const t = cellStr(raw);
+  if(!t) return null;
+  return /^-?\d[\d,]*\.?\d*$|^-?\.\d+$/.test(t) ? Number(t.replace(/,/g,'')) : t;
+}
+function recoColIdx(letters){ let n=0; for(const ch of letters) n = n*26 + (ch.charCodeAt(0)-64); return n; }
+function recoSetCell(doc, ref, val){
+  if(val===null || val===undefined || val==='') return;
+  const NS = doc.documentElement.namespaceURI;
+  const m = ref.match(/^([A-Z]+)(\d+)$/);
+  const rowNum = +m[2], colNum = recoColIdx(m[1]);
+  const sheetData = doc.getElementsByTagNameNS(NS,'sheetData')[0];
+  let row = Array.from(sheetData.children).find(r => +r.getAttribute('r')===rowNum);
+  if(!row){
+    row = doc.createElementNS(NS,'row'); row.setAttribute('r', rowNum);
+    const after = Array.from(sheetData.children).find(r => +r.getAttribute('r')>rowNum);
+    sheetData.insertBefore(row, after || null);
+  }
+  let cell = Array.from(row.children).find(c => c.getAttribute('r')===ref);
+  if(!cell){
+    cell = doc.createElementNS(NS,'c'); cell.setAttribute('r', ref);
+    const after = Array.from(row.children).find(c => recoColIdx(c.getAttribute('r').replace(/\d+/g,''))>colNum);
+    row.insertBefore(cell, after || null);
+  }
+  while(cell.firstChild) cell.removeChild(cell.firstChild);
+  if(typeof val==='number'){
+    cell.removeAttribute('t');
+    const v = doc.createElementNS(NS,'v'); v.textContent = String(val); cell.appendChild(v);
+  } else {
+    cell.setAttribute('t','inlineStr');
+    const is = doc.createElementNS(NS,'is'), t = doc.createElementNS(NS,'t');
+    t.textContent = String(val); is.appendChild(t); cell.appendChild(is);
+  }
+}
+async function buildRecoBlob(s){
+  if(typeof JSZip==='undefined') throw new Error("The Excel helper didn't load. Check your internet connection and refresh the page.");
+  const zip = await JSZip.loadAsync(RECO_TEMPLATE_B64, { base64:true });
+  const xml = await zip.file(RECO_SHEET_PATH).async('string');
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  if(doc.getElementsByTagName('parsererror').length) throw new Error('The reco template could not be read.');
+  const top = (s.topSample||0) + (s.gptSample||0) + (s.bulkGpt||0);
+  const cells = {
+    A2: s.brand,                       // brand banner
+    A6: s.style, B6: s.color,
+    C6: s.order,                       // Order quantity
+    D6: s.cutting,                     // Pcs. cut by FCT
+    E6: s.sewing,                      // PROD OUT PCS (total sewing out)
+    F6: s.dispatched,                  // QC Pcs. / Fresh Pack (dispatched qty)
+    I6: s.fabricReceive,               // Recvd Mtrs
+    L6: s.avg,                         // Avg
+    N8: recoCellValue(s.balFabricRaw), // Balance fabric
+    P6: recoCellValue(s.recoFresh),    // Fresh pieces  (sheet column AQ)
+    Q6: recoCellValue(s.recoB),        // B pieces      (sheet column AR)
+    R6: top,                           // TOP + Photo Shoot + GPT
+    T6: s.sewRej,                      // Sewing rejection pcs
+  };
+  Object.keys(cells).forEach(ref => recoSetCell(doc, ref, cells[ref]));
+  const out = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + new XMLSerializer().serializeToString(doc);
+  zip.file(RECO_SHEET_PATH, out);
+  return zip.generateAsync({ type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', compression:'DEFLATE' });
+}
+function recoFileName(s){
+  const clean = t => (t||'').replace(/[\\/:*?"<>|]+/g,'-').replace(/\s+/g,' ').trim();
+  return `Reco - ${clean(s.style)} - ${clean(s.color)}.xlsx`;
+}
+let toastTimer=null;
+function showToast(msg, bad){
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>{ el.className=''; }, bad ? 6000 : 3500);
+}
+async function recoDownload(s, btn){
+  const label = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Creating…'; }
+  try{
+    const blob = await buildRecoBlob(s);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = recoFileName(s);
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=> URL.revokeObjectURL(url), 4000);
+    showToast(`Downloaded ${recoFileName(s)}`);
+  }catch(err){
+    console.error(err);
+    showToast(err.message || String(err), true);
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = label; }
+  }
+}
+function recoEmailDraft(s){
+  const to = recoRecipient(s.line);
+  const subject = `Reco Sheet - ${s.style} - ${s.color}`;
+  const body = `Hi,\n\nPlease find attached the reco sheet for style ${s.style}, colour ${s.color} (dispatched qty: ${fmt(s.dispatched)}), for filling in the remaining manual fields.\n\nRegards`;
+  const url = 'https://mail.google.com/mail/?view=cm&fs=1&to=' + encodeURIComponent(to) +
+              '&su=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
+  window.open(url, '_blank', 'noopener');
+  showToast(`Draft to ${to} opened — attach the downloaded sheet before sending.`);
+}
+function renderRecoTable(){
+  const showAll = document.getElementById('recoShowAll').checked;
+  const list = STYLES.map((s,i)=>({s,i}))
+    .filter(x => showAll || x.s.dispatched>0)
+    .sort((a,b)=> (b.s.dispatched>0) - (a.s.dispatched>0));
+  const head = `<thead><tr><th>Style</th><th>Colour</th><th>Location</th><th class="num">Order</th><th class="num">Dispatched</th><th>Email goes to</th><th></th></tr></thead>`;
+  const body = list.map(({s,i})=>`<tr>
+    <td class="tabular">${s.style}</td><td>${s.color}</td><td>${s.line}</td>
+    <td class="num">${fmt(s.order)}</td>
+    <td class="num" style="color:${s.dispatched>0?cv('--good'):cv('--muted')}">${fmt(s.dispatched)}</td>
+    <td>${recoRecipient(s.line)}</td>
+    <td><div class="reco-actions">
+      <button class="mini-btn" data-reco="dl" data-idx="${i}">Create reco</button>
+      <button class="mini-btn ghost" data-reco="mail" data-idx="${i}">Email draft</button>
+    </div></td></tr>`).join('');
+  document.getElementById('recoTable').innerHTML = head + `<tbody>${body || `<tr><td colspan="7">No dispatched styles yet. Tick the box above to see every style.</td></tr>`}</tbody>`;
+  applySearch('recoSearch', 'recoTable');
+}
+document.getElementById('recoTable').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button[data-reco]');
+  if(!btn) return;
+  const s = STYLES[+btn.dataset.idx];
+  if(!s) return;
+  if(btn.dataset.reco==='dl') recoDownload(s, btn); else recoEmailDraft(s);
+});
+document.getElementById('recoShowAll').addEventListener('change', renderRecoTable);
+
+/* ============================================================
    Tabs / overlay wiring
    ============================================================ */
 document.getElementById('tabs').addEventListener('click', (e)=>{
@@ -1347,6 +1483,7 @@ wireTableSearch('lineSnapshotSearch', 'lineSnapshotTable');
 wireTableSearch('dailyStageSearch', 'dailyStageTable');
 wireTableSearch('attendanceSearch', 'attendanceTable');
 wireTableSearch('contractorSearch', 'contractorTable');
+wireTableSearch('recoSearch', 'recoTable');
 
 function renderAll(){
   renderOverview();
@@ -1354,6 +1491,7 @@ function renderAll(){
   renderDailyStageNote(); renderDailyStageTable();
   renderLineFilters(); renderManpowerChart(); renderAttendanceTable();
   renderContractorKpis(); renderContractorGroups(); renderContractorTable();
+  renderRecoTable();
 }
 
 /* ============================================================
