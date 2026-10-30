@@ -520,7 +520,9 @@ function styleMatches(a,b){
 const AUTO_REFRESH_MS = 3 * 60 * 1000; // 3 minutes
 
 function gvizUrl(sheetName){
-  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&_=${Date.now()}`;
+  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}${sheetName===TABS.master ? '&headers=2' : ''}&_=${Date.now()}`;
+  // Production has a 2-row header (group banner + column names). headers=2 makes Google always merge
+  // them the same way; without it Google sometimes guesses differently and blanks the SR.NO header.
 }
 
 function parseCSV(text){
@@ -567,7 +569,7 @@ function normHeader(h){ return cellStr(h).toLowerCase().replace(/\s+/g,' ').trim
 function findCol(headerNorm, pred){ return headerNorm.findIndex(pred); }
 
 function parseMaster(rows){
-  const headerIdx = rows.findIndex(r => normHeader(r[0]).replace(/\s/g,'').includes('sr.no') || normHeader(r[0]).replace(/\s/g,'').endsWith('srno'));
+  const headerIdx = rows.findIndex(r => normHeader(r[0]).replace(/\s/g,'').includes('sr.no') || normHeader(r[0]).replace(/\s/g,'').endsWith('srno') || r.some(c => normHeader(c).includes('style no')));
   if(headerIdx<0) throw new Error(`Could not find the header row in "${TABS.master}" (expected a "SR.NO" column).`);
   const H = rows[headerIdx].map(normHeader);
 
